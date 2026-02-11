@@ -11,16 +11,16 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
 {
     // Folder types — one per domain event category
     const FOLDERS = [
-        'renew'    => ['type' => 121, 'name' => 'Domains / Renewals',    'icon' => 'refresh'],
-        'transfer' => ['type' => 122, 'name' => 'Domains / Transfers',   'icon' => 'transfer'],
+        'renew'    => ['type' => 121, 'name' => 'Domains / Renewals',      'icon' => 'refresh'],
+        'transfer' => ['type' => 122, 'name' => 'Domains / Transfers',     'icon' => 'transfer'],
         'register' => ['type' => 123, 'name' => 'Domains / Registrations', 'icon' => 'plus-sign'],
-        'expire'   => ['type' => 124, 'name' => 'Domains / Expiry',      'icon' => 'time'],
-        'delete'   => ['type' => 125, 'name' => 'Domains / Deletions',   'icon' => 'trash'],
-        'wdrp'     => ['type' => 126, 'name' => 'Domains / WDRP',        'icon' => 'envelope'],
-        'other'    => ['type' => 127, 'name' => 'Domains / Other',       'icon' => 'globe'],
+        'expire'   => ['type' => 124, 'name' => 'Domains / Expiry',        'icon' => 'time'],
+        'delete'   => ['type' => 125, 'name' => 'Domains / Deletions',     'icon' => 'trash'],
+        'wdrp'     => ['type' => 126, 'name' => 'Domains / WDRP',          'icon' => 'envelope'],
+        'other'    => ['type' => 127, 'name' => 'Domains / Other',         'icon' => 'globe'],
     ];
 
-    // Map message_type to category + readable label
+    // Map message_type (from MESSAGE_STATUS_CHANGE events) to category + label
     const MESSAGE_TYPES = [
         'reseller.renewal.confirmation'        => ['cat' => 'renew',    'label' => 'Renewal confirmation'],
         'reseller.renewal.reminder'            => ['cat' => 'renew',    'label' => 'Renewal reminder'],
@@ -47,19 +47,28 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
         'registrant.trade.confirmation'        => ['cat' => 'transfer', 'label' => 'Registrant change confirmation (registrant)'],
     ];
 
-    // Map event types to category + readable label (fallback when no message_type)
+    // Map event types to category + label (used when no message_type)
     const EVENT_TYPES = [
-        'REGISTERED'                              => ['cat' => 'register', 'label' => 'Registered'],
-        'RENEWED'                                 => ['cat' => 'renew',    'label' => 'Renewed'],
-        'EXPIRED'                                 => ['cat' => 'expire',   'label' => 'Expired'],
-        'DELETED'                                 => ['cat' => 'delete',   'label' => 'Deleted'],
-        'STATUS_CHANGE'                           => ['cat' => 'other',    'label' => 'Status change'],
-        'NAMESERVER_UPDATE'                       => ['cat' => 'other',    'label' => 'Nameserver update'],
-        'ZONE_CHECK_STATUS_CHANGE'                => ['cat' => 'other',    'label' => 'Zone check status change'],
-        'CLAIM_STATUS_CHANGE'                     => ['cat' => 'other',    'label' => 'Claim status change'],
-        'REGISTRANT_VERIFICATION_STATUS_CHANGE'   => ['cat' => 'wdrp',     'label' => 'Registrant verification status change'],
-        'ICANN_TRADE_STATUS_CHANGE'               => ['cat' => 'transfer', 'label' => 'Registrant change status'],
-        'MESSAGE_STATUS_CHANGE'                   => ['cat' => 'other',    'label' => 'Message status change'],
+        'REGISTERED'                            => ['cat' => 'register', 'label' => 'Registered'],
+        'RENEWED'                               => ['cat' => 'renew',    'label' => 'Renewed'],
+        'EXPIRED'                               => ['cat' => 'expire',   'label' => 'Expired'],
+        'DELETED'                               => ['cat' => 'delete',   'label' => 'Deleted'],
+        'STATUS_CHANGE'                         => ['cat' => 'other',    'label' => 'Status change'],
+        'NAMESERVER_UPDATE'                     => ['cat' => 'other',    'label' => 'Nameserver update'],
+        'ZONE_CHECK_STATUS_CHANGE'              => ['cat' => 'other',    'label' => 'Zone check'],
+        'CLAIM_STATUS_CHANGE'                   => ['cat' => 'other',    'label' => 'Claim status change'],
+        'REGISTRANT_VERIFICATION_STATUS_CHANGE' => ['cat' => 'wdrp',     'label' => 'Registrant verification'],
+        'ICANN_TRADE_STATUS_CHANGE'             => ['cat' => 'transfer', 'label' => 'Registrant change'],
+        'MESSAGE_STATUS_CHANGE'                 => ['cat' => 'other',    'label' => 'Message status change'],
+    ];
+
+    // Map ORDER object's order_reg_type to category
+    const ORDER_REG_TYPES = [
+        'new'             => ['cat' => 'register', 'label' => 'New registration order'],
+        'renewal'         => ['cat' => 'renew',    'label' => 'Renewal order'],
+        'transfer'        => ['cat' => 'transfer', 'label' => 'Transfer order'],
+        'whois_privacy'   => ['cat' => 'other',    'label' => 'WHOIS privacy order'],
+        'change_contact'  => ['cat' => 'transfer', 'label' => 'Contact change order'],
     ];
 
     public function boot()
@@ -83,9 +92,38 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
     protected function registerHooks()
     {
         \Eventy::addFilter('fetch_emails.data_to_save', function ($data) {
-            $body = $data['body'] ?? '';
+            // Only process emails from OpenSRS
+            $from = $data['from'] ?? '';
+            if (stripos($from, 'opensrs') === false && stripos($from, 'tucows') === false) {
+                return $data;
+            }
 
-            $json = $this->extractOpenSrsJson($body);
+            // Try to extract JSON from the event_data.json attachment
+            $json = null;
+            $attachments = $data['attachments'] ?? [];
+            foreach ($attachments as $attachment) {
+                $name = '';
+                if (method_exists($attachment, 'getName')) {
+                    $name = $attachment->getName();
+                }
+                if (stripos($name, 'event_data') !== false && stripos($name, '.json') !== false) {
+                    $content = '';
+                    if (method_exists($attachment, 'getContent')) {
+                        $content = $attachment->getContent();
+                    }
+                    $json = json_decode($content, true);
+                    if ($json && isset($json['event'])) {
+                        break;
+                    }
+                    $json = null;
+                }
+            }
+
+            // Fallback: try body (in case JSON is inline)
+            if (!$json) {
+                $json = $this->extractJsonFromBody($data['body'] ?? '');
+            }
+
             if (!$json) {
                 return $data;
             }
@@ -93,17 +131,23 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
             $objectData = $json['object_data'] ?? [];
             $domain = $objectData['domain_name'] ?? 'unknown';
             $event = $json['event'] ?? '';
+            $object = $json['object'] ?? '';
             $messageType = $objectData['message_type'] ?? '';
+            $orderRegType = $objectData['order_reg_type'] ?? '';
+            $orderStatus = $objectData['order_status'] ?? '';
 
-            // Determine category
-            $category = $this->resolveCategory($event, $messageType);
-            $label = $this->resolveLabel($event, $messageType);
+            // Determine category and label
+            $category = $this->resolveCategory($event, $messageType, $orderRegType, $object);
+            $label = $this->resolveLabel($event, $messageType, $orderRegType, $orderStatus, $object);
 
-            // Subject: [dns:renew] example.com — Renewal confirmation
+            // Subject: [dns:renew] example.com — Renewed
             $data['subject'] = '[dns:' . $category . '] ' . $domain . ' — ' . $label;
 
-            // Replace raw JSON with readable body
+            // Replace body with readable summary
             $data['body'] = $this->buildReadableBody($json);
+
+            // Drop the JSON attachment (info is now in the body)
+            $data['attachments'] = [];
 
             // Prevent auto-replies
             $data['auto_reply_sent'] = true;
@@ -132,12 +176,10 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
     {
         $folderTypes = array_column(self::FOLDERS, 'type');
 
-        // Register all domain folder types as public
         \Eventy::addFilter('mailbox.folders.public_types', function ($list) use ($folderTypes) {
             return array_merge($list, $folderTypes);
         }, 20, 1);
 
-        // Set folder names
         \Eventy::addFilter('folder.type_name', function ($name, $folder) {
             foreach (self::FOLDERS as $info) {
                 if ($folder->type == $info['type']) {
@@ -147,7 +189,6 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
             return $name;
         }, 20, 2);
 
-        // Set folder icons
         \Eventy::addFilter('folder.type_icon', function ($icon, $folder) {
             foreach (self::FOLDERS as $info) {
                 if ($folder->type == $info['type']) {
@@ -157,7 +198,6 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
             return $icon;
         }, 20, 2);
 
-        // Query filter: route conversations to the right folder, exclude from standard folders
         \Eventy::addFilter('folder.conversations_query', function ($query, $folder, $user_id) {
             $catKey = $this->folderTypeToCategory($folder->type);
 
@@ -169,7 +209,7 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
                     ->orderBy('last_reply_at', 'desc');
             }
 
-            // For non-domain folders: exclude all domain conversations
+            // Exclude domain conversations from standard folders
             $folderTypes = array_column(self::FOLDERS, 'type');
             if (!in_array($folder->type, $folderTypes)) {
                 foreach (array_keys(self::FOLDERS) as $cat) {
@@ -180,7 +220,6 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
             return $query;
         }, 20, 3);
 
-        // Counter updates for each folder
         \Eventy::addFilter('folder.update_counters', function ($updated, $folder) {
             $catKey = $this->folderTypeToCategory($folder->type);
             if ($catKey === null) {
@@ -227,22 +266,27 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
     }
 
     /**
-     * Resolve the category key from event + message_type.
+     * Resolve category from event, message_type, and order_reg_type.
      */
-    protected function resolveCategory($event, $messageType)
+    protected function resolveCategory($event, $messageType, $orderRegType = '', $object = '')
     {
+        // message_type is most specific (from MESSAGE_STATUS_CHANGE events)
         if (!empty($messageType) && isset(self::MESSAGE_TYPES[$messageType])) {
             return self::MESSAGE_TYPES[$messageType]['cat'];
         }
-        // Infer from message_type keywords
         if (!empty($messageType)) {
-            if (strpos($messageType, 'renewal') !== false || strpos($messageType, 'renew') !== false) return 'renew';
-            if (strpos($messageType, 'transfer') !== false || strpos($messageType, 'trade') !== false) return 'transfer';
-            if (strpos($messageType, 'registration') !== false) return 'register';
-            if (strpos($messageType, 'expir') !== false) return 'expire';
-            if (strpos($messageType, 'delet') !== false) return 'delete';
-            if (strpos($messageType, 'wdrp') !== false || strpos($messageType, 'verification') !== false) return 'wdrp';
+            if (stripos($messageType, 'renewal') !== false || stripos($messageType, 'renew') !== false) return 'renew';
+            if (stripos($messageType, 'transfer') !== false || stripos($messageType, 'trade') !== false) return 'transfer';
+            if (stripos($messageType, 'registration') !== false) return 'register';
+            if (stripos($messageType, 'expir') !== false) return 'expire';
+            if (stripos($messageType, 'delet') !== false) return 'delete';
+            if (stripos($messageType, 'wdrp') !== false || stripos($messageType, 'verification') !== false) return 'wdrp';
         }
+        // ORDER events: use order_reg_type
+        if ($object === 'ORDER' && !empty($orderRegType) && isset(self::ORDER_REG_TYPES[$orderRegType])) {
+            return self::ORDER_REG_TYPES[$orderRegType]['cat'];
+        }
+        // Fall back to event type
         if (!empty($event) && isset(self::EVENT_TYPES[$event])) {
             return self::EVENT_TYPES[$event]['cat'];
         }
@@ -250,15 +294,25 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
     }
 
     /**
-     * Resolve the human-readable label from event + message_type.
+     * Resolve human-readable label.
      */
-    protected function resolveLabel($event, $messageType)
+    protected function resolveLabel($event, $messageType, $orderRegType = '', $orderStatus = '', $object = '')
     {
         if (!empty($messageType) && isset(self::MESSAGE_TYPES[$messageType])) {
             return self::MESSAGE_TYPES[$messageType]['label'];
         }
         if (!empty($messageType)) {
             return ucfirst(str_replace(['.', '_'], ' ', $messageType));
+        }
+        // ORDER events: combine reg_type + status
+        if ($object === 'ORDER' && !empty($orderRegType)) {
+            $regLabel = isset(self::ORDER_REG_TYPES[$orderRegType])
+                ? self::ORDER_REG_TYPES[$orderRegType]['label']
+                : ucfirst(str_replace('_', ' ', $orderRegType)) . ' order';
+            if (!empty($orderStatus)) {
+                $regLabel .= ' (' . $orderStatus . ')';
+            }
+            return $regLabel;
         }
         if (!empty($event) && isset(self::EVENT_TYPES[$event])) {
             return self::EVENT_TYPES[$event]['label'];
@@ -269,9 +323,6 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
         return 'Domain event';
     }
 
-    /**
-     * Map a folder type ID back to a category key, or null if not ours.
-     */
     protected function folderTypeToCategory($type)
     {
         foreach (self::FOLDERS as $catKey => $info) {
@@ -283,70 +334,75 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
     }
 
     /**
-     * Extract OpenSRS JSON from an email body.
+     * Fallback: try to find OpenSRS JSON in the email body.
      */
-    protected function extractOpenSrsJson($body)
+    protected function extractJsonFromBody($body)
     {
         if (empty($body)) {
             return null;
         }
-
         $plain = strip_tags($body);
         $plain = html_entity_decode($plain, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $plain = trim($plain);
 
-        // Try the whole body as JSON
         $json = json_decode($plain, true);
         if ($json && isset($json['event']) && isset($json['object_data'])) {
             return $json;
         }
-
-        // Try to find JSON object within the text
-        if (preg_match('/\{(?:[^{}]|(?:\{[^{}]*\}))*"event"\s*:(?:[^{}]|(?:\{[^{}]*\}))*\}/s', $plain, $matches)) {
-            $json = json_decode($matches[0], true);
-            if ($json && isset($json['event']) && isset($json['object_data'])) {
-                return $json;
-            }
-        }
-
         return null;
     }
 
     /**
-     * Build a clean HTML body from the JSON event.
+     * Build readable HTML body from the JSON event.
      */
     protected function buildReadableBody($json)
     {
         $objectData = $json['object_data'] ?? [];
         $domain = $objectData['domain_name'] ?? 'unknown';
         $event = $json['event'] ?? '';
+        $object = $json['object'] ?? '';
         $eventDate = $json['event_date'] ?? '';
         $messageType = $objectData['message_type'] ?? '';
         $messageStatus = $objectData['message_status'] ?? '';
         $toAddress = $objectData['to_address'] ?? '';
         $domainId = $objectData['domain_id'] ?? '';
-
-        $eventLabel = isset(self::EVENT_TYPES[$event]) ? self::EVENT_TYPES[$event]['label'] : ucfirst(strtolower(str_replace('_', ' ', $event)));
-        $typeLabel = '';
-        if (!empty($messageType)) {
-            $typeLabel = isset(self::MESSAGE_TYPES[$messageType]) ? self::MESSAGE_TYPES[$messageType]['label'] : str_replace(['.', '_'], ' ', $messageType);
-        }
+        $orderRegType = $objectData['order_reg_type'] ?? '';
+        $orderStatus = $objectData['order_status'] ?? '';
+        $orderId = $objectData['order_id'] ?? '';
+        $period = $objectData['period'] ?? '';
+        $expirationDate = $objectData['expiration_date'] ?? '';
 
         $lines = [];
         $lines[] = '<div class="opensrs-event-summary">';
         $lines[] = '<b>Domain:</b> ' . htmlspecialchars($domain);
-        $lines[] = '<b>Event:</b> ' . htmlspecialchars($eventLabel);
-        if (!empty($typeLabel)) {
+        $lines[] = '<b>Event:</b> ' . htmlspecialchars($object . ' ' . $event);
+        if (!empty($messageType)) {
+            $typeLabel = isset(self::MESSAGE_TYPES[$messageType]) ? self::MESSAGE_TYPES[$messageType]['label'] : $messageType;
             $lines[] = '<b>Type:</b> ' . htmlspecialchars($typeLabel);
         }
+        if (!empty($orderRegType)) {
+            $lines[] = '<b>Order type:</b> ' . htmlspecialchars(str_replace('_', ' ', $orderRegType));
+        }
+        if (!empty($orderStatus)) {
+            $lines[] = '<b>Order status:</b> ' . htmlspecialchars($orderStatus);
+        }
         if (!empty($messageStatus)) {
-            $lines[] = '<b>Status:</b> ' . htmlspecialchars($messageStatus);
+            $lines[] = '<b>Message status:</b> ' . htmlspecialchars($messageStatus);
         }
         if (!empty($toAddress)) {
             $lines[] = '<b>Sent to:</b> ' . htmlspecialchars($toAddress);
         }
+        if (!empty($expirationDate)) {
+            $lines[] = '<b>Expires:</b> ' . htmlspecialchars($expirationDate);
+        }
+        if (!empty($period)) {
+            $lines[] = '<b>Period:</b> ' . htmlspecialchars($period) . ' year(s)';
+        }
         if (!empty($eventDate)) {
             $lines[] = '<b>Date:</b> ' . htmlspecialchars($eventDate);
+        }
+        if (!empty($orderId)) {
+            $lines[] = '<b>Order ID:</b> ' . htmlspecialchars($orderId);
         }
         if (!empty($domainId)) {
             $lines[] = '<b>Domain ID:</b> ' . htmlspecialchars($domainId);
