@@ -160,13 +160,13 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
             return $data;
         }, 20, 1);
 
-        // Suppress auto-reply on conversation creation
-        \Eventy::addAction('conversation.created_by_customer', function ($conversation, $thread, $customer) {
+        // Block auto-replies to OpenSRS emails
+        \Eventy::addFilter('autoreply.should_send', function ($shouldSend, $conversation) {
             if (preg_match('/^\[dns:/', $conversation->subject)) {
-                $conversation->auto_reply_sent = true;
-                $conversation->save();
+                return false;
             }
-        }, 20, 3);
+            return $shouldSend;
+        }, 20, 2);
     }
 
     protected function registerFolderHooks()
