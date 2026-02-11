@@ -1,0 +1,17 @@
+{
+    "name": "OpenSRS Events",
+    "alias": "opensrsevents",
+    "description": "Parses OpenSRS/Tucows domain event JSON emails into human-readable summaries with a dedicated Domains folder",
+    "version": "1.0.0",
+    "author": "Coolnetworks",
+    "license": "MIT",
+    "keywords": [],
+    "active": 1,
+    "order": 0,
+    "providers": [
+        "Modules\\OpenSrsEvents\\Providers\\OpenSrsEventsServiceProvider"
+    ],
+    "aliases": {},
+    "files": [],
+    "requires": []
+}
