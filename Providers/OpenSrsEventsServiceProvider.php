@@ -9,16 +9,7 @@ define('OPENSRSEVENTS_MODULE', 'opensrsevents');
 
 class OpenSrsEventsServiceProvider extends ServiceProvider
 {
-    // Folder types — one per domain event category
-    const FOLDERS = [
-        'renew'    => ['type' => 121, 'name' => 'Domains / Renewals',      'icon' => 'refresh'],
-        'transfer' => ['type' => 122, 'name' => 'Domains / Transfers',     'icon' => 'transfer'],
-        'register' => ['type' => 123, 'name' => 'Domains / Registrations', 'icon' => 'plus-sign'],
-        'expire'   => ['type' => 124, 'name' => 'Domains / Expiry',        'icon' => 'time'],
-        'delete'   => ['type' => 125, 'name' => 'Domains / Deletions',     'icon' => 'trash'],
-        'wdrp'     => ['type' => 126, 'name' => 'Domains / WDRP',          'icon' => 'envelope'],
-        'other'    => ['type' => 127, 'name' => 'Domains / Other',         'icon' => 'globe'],
-    ];
+    const FOLDER_TYPE_DOMAINS = 121;
 
     // Map message_type (from MESSAGE_STATUS_CHANGE events) to category + label
     const MESSAGE_TYPES = [
@@ -171,68 +162,57 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
 
     protected function registerFolderHooks()
     {
-        $folderTypes = array_column(self::FOLDERS, 'type');
-
-        \Eventy::addFilter('mailbox.folders.public_types', function ($list) use ($folderTypes) {
-            return array_merge($list, $folderTypes);
+        \Eventy::addFilter('mailbox.folders.public_types', function ($list) {
+            $list[] = self::FOLDER_TYPE_DOMAINS;
+            return $list;
         }, 20, 1);
 
         \Eventy::addFilter('folder.type_name', function ($name, $folder) {
-            foreach (self::FOLDERS as $info) {
-                if ($folder->type == $info['type']) {
-                    return $info['name'];
-                }
+            if ($folder->type == self::FOLDER_TYPE_DOMAINS) {
+                return 'Domains';
             }
             return $name;
         }, 20, 2);
 
         \Eventy::addFilter('folder.type_icon', function ($icon, $folder) {
-            foreach (self::FOLDERS as $info) {
-                if ($folder->type == $info['type']) {
-                    return $info['icon'];
-                }
+            if ($folder->type == self::FOLDER_TYPE_DOMAINS) {
+                return 'globe';
             }
             return $icon;
         }, 20, 2);
 
         \Eventy::addFilter('folder.conversations_query', function ($query, $folder, $user_id) {
-            $catKey = $this->folderTypeToCategory($folder->type);
-
-            if ($catKey !== null) {
+            if ($folder->type == self::FOLDER_TYPE_DOMAINS) {
                 return Conversation::where('mailbox_id', $folder->mailbox_id)
                     ->where('state', Conversation::STATE_PUBLISHED)
                     ->where('status', '!=', Conversation::STATUS_SPAM)
-                    ->where('subject', 'LIKE', '[dns:' . $catKey . ']%')
+                    ->where('subject', 'LIKE', '[dns:%')
                     ->orderBy('last_reply_at', 'desc');
             }
 
             // Exclude domain conversations from standard folders
-            $folderTypes = array_column(self::FOLDERS, 'type');
-            if (!in_array($folder->type, $folderTypes)) {
-                foreach (array_keys(self::FOLDERS) as $cat) {
-                    $query = $query->where('subject', 'NOT LIKE', '[dns:' . $cat . ']%');
-                }
+            if ($folder->type != self::FOLDER_TYPE_DOMAINS) {
+                $query = $query->where('subject', 'NOT LIKE', '[dns:%');
             }
 
             return $query;
         }, 20, 3);
 
         \Eventy::addFilter('folder.update_counters', function ($updated, $folder) {
-            $catKey = $this->folderTypeToCategory($folder->type);
-            if ($catKey === null) {
+            if ($folder->type != self::FOLDER_TYPE_DOMAINS) {
                 return $updated;
             }
 
             $folder->active_count = Conversation::where('mailbox_id', $folder->mailbox_id)
                 ->where('state', Conversation::STATE_PUBLISHED)
                 ->whereIn('status', [Conversation::STATUS_ACTIVE, Conversation::STATUS_PENDING])
-                ->where('subject', 'LIKE', '[dns:' . $catKey . ']%')
+                ->where('subject', 'LIKE', '[dns:%')
                 ->count();
 
             $folder->total_count = Conversation::where('mailbox_id', $folder->mailbox_id)
                 ->where('state', Conversation::STATE_PUBLISHED)
                 ->where('status', '!=', Conversation::STATUS_SPAM)
-                ->where('subject', 'LIKE', '[dns:' . $catKey . ']%')
+                ->where('subject', 'LIKE', '[dns:%')
                 ->count();
 
             $folder->save();
@@ -245,16 +225,14 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
         try {
             $mailboxes = \App\Mailbox::all();
             foreach ($mailboxes as $mailbox) {
-                foreach (self::FOLDERS as $info) {
-                    $exists = \App\Folder::where('mailbox_id', $mailbox->id)
-                        ->where('type', $info['type'])
-                        ->exists();
-                    if (!$exists) {
-                        $folder = new \App\Folder();
-                        $folder->mailbox_id = $mailbox->id;
-                        $folder->type = $info['type'];
-                        $folder->save();
-                    }
+                $exists = \App\Folder::where('mailbox_id', $mailbox->id)
+                    ->where('type', self::FOLDER_TYPE_DOMAINS)
+                    ->exists();
+                if (!$exists) {
+                    $folder = new \App\Folder();
+                    $folder->mailbox_id = $mailbox->id;
+                    $folder->type = self::FOLDER_TYPE_DOMAINS;
+                    $folder->save();
                 }
             }
         } catch (\Exception $e) {
@@ -318,16 +296,6 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
             return ucfirst(strtolower(str_replace('_', ' ', $event)));
         }
         return 'Domain event';
-    }
-
-    protected function folderTypeToCategory($type)
-    {
-        foreach (self::FOLDERS as $catKey => $info) {
-            if ($info['type'] == $type) {
-                return $catKey;
-            }
-        }
-        return null;
     }
 
     /**
