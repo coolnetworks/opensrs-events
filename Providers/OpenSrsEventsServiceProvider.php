@@ -149,9 +149,6 @@ class OpenSrsEventsServiceProvider extends ServiceProvider
             // Drop the JSON attachment (info is now in the body)
             $data['attachments'] = [];
 
-            // Prevent auto-replies
-            $data['auto_reply_sent'] = true;
-
             // Thread by domain + category
             if (empty($data['prev_thread'])) {
                 $prev = $this->findExistingDomainThread($domain, $category);
